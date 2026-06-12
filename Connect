@@ -1,0 +1,125 @@
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <PubSubClient.h>
+#include <ArduinoJson.h> // Bạn cần cài thư viện này trong Library Manager
+#include "DHT.h"
+
+// --- Cấu hình Cảm biến DHT ---
+#define DHTPIN 17
+#define DHTTYPE DHT11 
+DHT dht(DHTPIN, DHTTYPE);
+
+// --- Cấu hình WiFi ---
+const char* ssid = "Phuongdeptrai";
+const char* password = "1234567890"; 
+
+// --- Cấu hình MQTT HiveMQ Cloud ---
+const char* mqtt_server = "268fe5e747d54295a4b7c306df5d912b.s1.eu.hivemq.cloud"; 
+const int mqtt_port = 8883;
+const char* mqtt_user = "thanhphuong"; 
+const char* mqtt_pass = "123456Hehe"; 
+const char* topic = "kafkamqtt";
+
+WiFiClientSecure espClient;
+PubSubClient client(espClient);
+
+unsigned long lastMsg = 0;
+
+void setup_wifi() {
+  delay(10);
+  Serial.println("\n--- Connecting to WiFi ---");
+  Serial.print("SSID: ");
+  Serial.println(ssid);
+
+  WiFi.begin(ssid, password);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println("\nWiFi connected!");
+  Serial.print("IP address: ");
+  Serial.println(WiFi.localIP());
+}
+
+void reconnect() {
+  // Lặp cho đến khi kết nối lại được
+  while (!client.connected()) {
+    // Nếu WiFi mất kết nối, phải kết nối lại WiFi trước
+    if (WiFi.status() != WL_CONNECTED) {
+      setup_wifi();
+    }
+
+    Serial.print("Attempting MQTT connection to HiveMQ Cloud...");
+    
+    // Tạo Client ID ngẫu nhiên để tránh trùng lặp
+    String clientId = "ESP32-FireSystem-";
+    clientId += String(random(0xffff), HEX);
+
+    if (client.connect(clientId.c_str(), mqtt_user, mqtt_pass)) {
+      Serial.println("CONNECTED!");
+    } else {
+      Serial.print("FAILED, rc=");
+      Serial.print(client.state());
+      Serial.println(" - try again in 5 seconds");
+      delay(5000);
+    }
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  
+  // Khởi tạo cảm biến
+  dht.begin();
+  
+  // Khởi tạo kết nối mạng
+  setup_wifi();
+  
+  // Thiết lập TLS: Bỏ qua kiểm tra chứng chỉ (cho mục đích thử nghiệm)
+  espClient.setInsecure(); 
+  
+  client.setServer(mqtt_server, mqtt_port);
+}
+
+void loop() {
+  if (!client.connected()) {
+    reconnect();
+  }
+  client.loop();
+
+  unsigned long now = millis();
+  // Gửi dữ liệu mỗi 5 giây
+  if (now - lastMsg > 5000) { 
+    lastMsg = now;
+
+    // 1. Đọc dữ liệu từ cảm biến
+    double h = dht.readHumidity();
+    double t = dht.readTemperature();
+    
+
+    // Kiểm tra lỗi cảm biến
+    if (isnan(h) || isnan(t)) {
+      Serial.println("⚠️ Failed to read from DHT sensor!");
+      return; 
+    }
+
+    // 2. Tạo JSON Payload sử dụng thư viện ArduinoJson
+    StaticJsonDocument<200> doc;
+    doc["TEMPERATURE"] = serialized(String(t, 2)); 
+    doc["HUMIDITY"] = serialized(String(h, 2));
+    doc["STATUS"] = "running";
+    doc["sensor_id"] = "ESP32_01";
+
+    String jsonPayload;
+    serializeJson(doc, jsonPayload);
+
+    // 3. Publish dữ liệu
+    Serial.print("Publishing: ");
+    Serial.println(jsonPayload);
+
+    client.publish(topic, jsonPayload.c_str());
+    
+  }
+}
